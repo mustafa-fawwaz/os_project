@@ -1,0 +1,10 @@
+https://www.gutenberg.org/cache/epub/76072/pg76072.txt THE_MYSTERY_OF_ANGELINA_FROOD.txt
+https://www.gutenberg.org/cache/epub/76278/pg76278.txt A_History_of_Evolution.txt
+https://www.gutenberg.org/ebooks/55.txt.utf-8 The_Wonderful_Wizard_of_Oz.txt
+https://www.gutenberg.org/ebooks/345.txt.utf-8 DRACULA.txt
+https://www.gutenberg.org/ebooks/36.txt.utf-8 The_War_of_the_Worlds.txt
+https://www.gutenberg.org/ebooks/18857.txt.utf-8 A_JOURNEY_TO_THE_CENTRE_OF_THE_EARTH.txt
+https://www.gutenberg.org/ebooks/17157.txt.utf-8 Gulliver’s_Travels.txt
+https://www.gutenberg.org/ebooks/50290.txt.utf-8 SPACE_STATION_1.txt
+https://www.gutenberg.org/ebooks/84.txt.utf-8 FRANKENSTEIN.txt
+https://www.gutenberg.org/ebooks/16.txt.utf-8 Peter_Pan.txt

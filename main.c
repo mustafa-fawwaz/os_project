@@ -1,288 +1,300 @@
-#include <stdio.h>     // Standard I/O functions (printf, fprintf, fopen, fclose, fwrite)
-#include <string.h>    // String manipulation functions (strncpy)
-#include <stdlib.h>    // Memory allocation functions (malloc, free, realloc)
-#include <pthread.h>   // POSIX threads (pthread_create, pthread_join, mutex functions)
-#include <curl/curl.h> // libcurl functions for HTTP requests
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
+#include <curl/curl.h>
+#include <ctype.h>
+#include <time.h>
 
-#define MAX_THREADS 16      // Maximum number of threads allowed
-#define MAX_URL_LENGTH 2048 // Maximum length for URL strings
+#define MAX_URL_LENGTH 2048
+#define MAX_LINE_LENGTH 4096
+#define MAX_THREADS 16
+#define MAX_WORD_LENGTH 128
 
-// Structure to hold download task information
-typedef struct
-{
-    char url[MAX_URL_LENGTH];      // URL to download
-    char filename[MAX_URL_LENGTH]; // Local filename to save to
-} DownloadTask;
-
-// Structure to manage the task queue
-typedef struct
-{
-    DownloadTask *tasks;  // Pointer to array of tasks
-    int count;            // Total number of tasks
-    int index;            // Current task index
-    pthread_mutex_t lock; // Mutex for thread-safe access
-} TaskQueue;
-
-// Structure to hold downloaded data in memory
+// Structure to hold a downloaded web page in memory
 struct MemoryStruct
 {
-    char *memory; // Pointer to downloaded data
-    size_t size;  // Size of downloaded data
+    char *memory;
+    size_t size;
 };
 
-/**
- * Initializes the task queue
- * @param queue Pointer to TaskQueue structure
- * @param tasks Array of DownloadTask items
- * @param count Number of tasks in the array
- *
- * Built-in functions used:
- * - pthread_mutex_init: Initializes a mutex for thread synchronization
- */
-void init_queue(TaskQueue *queue, DownloadTask *tasks, int count)
+// Structure to hold URL and associated data
+typedef struct
 {
-    queue->tasks = tasks;
-    queue->count = count;
-    queue->index = 0;
-    pthread_mutex_init(&queue->lock, NULL); // Initialize mutex with default attributes
-    printf("Queue initialized with %d tasks\n", count);
-}
+    char url[MAX_URL_LENGTH];
+    char filename[MAX_URL_LENGTH];
+} URLTask;
 
-/**
- * Gets the next task from the queue (thread-safe)
- * @param queue Pointer to TaskQueue structure
- * @param task Pointer to store the retrieved task
- * @return 1 if task retrieved, 0 if no more tasks
- *
- * Built-in functions used:
- * - pthread_mutex_lock: Locks the mutex to prevent concurrent access
- * - pthread_mutex_unlock: Releases the mutex after critical section
- */
-int get_next_task(TaskQueue *queue, DownloadTask *task)
-{
-    pthread_mutex_lock(&queue->lock); // Enter critical section
+// Global array of URLs and thread-safe index
+URLTask *url_tasks = NULL;
+int total_urls = 0;
+int current_index = 0;
+int chunk_size = 0;
+pthread_mutex_t task_mutex;
 
-    if (queue->index >= queue->count)
-    {
-        pthread_mutex_unlock(&queue->lock);
-        return 0; // No more tasks
-    }
+// Statistics (shared across threads)
+int global_sentence_count = 0;
+int global_word_count = 0;
+char longest_word[MAX_WORD_LENGTH] = "";
+pthread_mutex_t stats_mutex;
 
-    *task = queue->tasks[queue->index++];
-    printf("Task %d assigned (total %d)\n", queue->index, queue->count);
-
-    pthread_mutex_unlock(&queue->lock); // Exit critical section
-    return 1;
-}
-
-/**
- * Callback function for libcurl to write received data
- * @param contents Pointer to received data
- * @param size Size of each data element
- * @param nmemb Number of elements
- * @param userp Pointer to user data (MemoryStruct)
- * @return Number of bytes actually written
- *
- * Built-in functions used:
- * - realloc: Resizes memory block while preserving contents
- * - memcpy: Copies memory from source to destination
- */
+// Helper to write data fetched via libcurl
 static size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp)
 {
     size_t realsize = size * nmemb;
     struct MemoryStruct *mem = (struct MemoryStruct *)userp;
 
-    // Resize memory block to accommodate new data
     char *ptr = realloc(mem->memory, mem->size + realsize + 1);
     if (!ptr)
     {
-        fprintf(stderr, "Memory error\n");
+        fprintf(stderr, "Memory allocation failed.\n");
         return 0;
     }
 
     mem->memory = ptr;
-    memcpy(&(mem->memory[mem->size]), contents, realsize); // Copy new data
+    memcpy(&(mem->memory[mem->size]), contents, realsize);
     mem->size += realsize;
-    mem->memory[mem->size] = 0; // Null-terminate the string
+    mem->memory[mem->size] = 0;
     return realsize;
 }
 
-/**
- * Downloads a URL and saves to file
- * @param url URL to download
- * @param filename Local filename to save to
- * @return 0 on success, -1 on failure
- *
- * Built-in functions used:
- * - malloc: Allocates memory
- * - free: Releases allocated memory
- * - fopen: Opens a file
- * - fwrite: Writes data to file
- * - fclose: Closes a file
- * - curl_easy_init: Initializes a libcurl easy handle
- * - curl_easy_setopt: Sets options for libcurl transfer
- * - curl_easy_perform: Performs the file transfer
- * - curl_easy_cleanup: Cleans up libcurl easy handle
- */
-int download_url(const char *url, const char *filename)
+// Download content from a URL using libcurl
+int fetch_url(const char *url, struct MemoryStruct *chunk)
 {
     CURL *curl;
     CURLcode res;
-    struct MemoryStruct chunk = {0};
 
-    chunk.memory = malloc(1); // Allocate initial memory
-    if (!chunk.memory)
-        return -1;
+    chunk->memory = malloc(1);
+    chunk->size = 0;
 
     curl = curl_easy_init();
-    if (curl)
+    if (!curl)
     {
-        // Set libcurl options
-        curl_easy_setopt(curl, CURLOPT_URL, url);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &chunk);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "libcurl-agent/1.0");
-        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L); // Follow redirects
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);       // 30-second timeout
-
-        res = curl_easy_perform(curl); // Perform the download
-        if (res != CURLE_OK)
-        {
-            fprintf(stderr, "Download failed: %s\n", curl_easy_strerror(res));
-            free(chunk.memory);
-            curl_easy_cleanup(curl);
-            return -1;
-        }
-
-        // Save to file
-        FILE *fp = fopen(filename, "wb"); // Open in binary mode
-        if (fp)
-        {
-            fwrite(chunk.memory, 1, chunk.size, fp); // Write data to file
-            fclose(fp);                              // Close file
-        }
-
-        free(chunk.memory);      // Free downloaded data
-        curl_easy_cleanup(curl); // Cleanup libcurl handle
-        return 0;
+        fprintf(stderr, "libcurl initialization failed.\n");
+        return -1;
     }
-    return -1;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)chunk);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "libcurl-agent/1.0");
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+
+    res = curl_easy_perform(curl);
+    if (res != CURLE_OK)
+    {
+        fprintf(stderr, "Failed to fetch %s: %s\n", url, curl_easy_strerror(res));
+        free(chunk->memory);
+        curl_easy_cleanup(curl);
+        return -1;
+    }
+
+    curl_easy_cleanup(curl);
+    return 0;
 }
 
-/**
- * Thread function to process download tasks
- * @param arg Pointer to TaskQueue structure
- * @return NULL
- *
- * Built-in functions used:
- * - pthread_self: Returns the thread ID of calling thread
- */
-void *download_thread(void *arg)
+// Analyze a chunk of words and update statistics
+void analyze_chunk(char **words, int start, int end)
 {
-    TaskQueue *queue = (TaskQueue *)arg;
-    DownloadTask task;
+    int sentence_count = 0, word_count = 0;
 
-    printf("Thread %lu started\n", (unsigned long)pthread_self());
-
-    // Process tasks until queue is empty
-    while (get_next_task(queue, &task))
+    for (int i = start; i < end; i++)
     {
-        printf("Thread %lu processing: %s\n",
-               (unsigned long)pthread_self(), task.url);
+        char *word = words[i];
+        size_t len = strlen(word);
 
-        if (download_url(task.url, task.filename) == 0)
+        if (len == 0)
+            continue;
+
+        if (word[len - 1] == '.' || word[len - 1] == '!' || word[len - 1] == '?')
         {
-            printf("Thread %lu completed: %s\n",
-                   (unsigned long)pthread_self(), task.url);
+            sentence_count++;
         }
-        else
+
+        word_count++;
+
+        pthread_mutex_lock(&stats_mutex);
+        if (strlen(word) > strlen(longest_word))
         {
-            fprintf(stderr, "Thread %lu failed: %s\n",
-                    (unsigned long)pthread_self(), task.url);
+            strncpy(longest_word, word, MAX_WORD_LENGTH);
         }
+        pthread_mutex_unlock(&stats_mutex);
     }
 
-    printf("Thread %lu exiting\n", (unsigned long)pthread_self());
+    pthread_mutex_lock(&stats_mutex);
+    global_sentence_count += sentence_count;
+    global_word_count += word_count;
+    pthread_mutex_unlock(&stats_mutex);
+}
+
+// Tokenize full text into words and process in chunks
+void process_text_in_chunks(char *text)
+{
+    char **words = malloc(sizeof(char *) * (strlen(text) / 2 + 1));
+    int word_count = 0;
+
+    char *token = strtok(text, " \t\n\r");
+    while (token != NULL)
+    {
+        words[word_count] = strdup(token);
+        word_count++;
+        token = strtok(NULL, " \t\n\r");
+    }
+
+    for (int i = 0; i < word_count; i += chunk_size)
+    {
+        int end = (i + chunk_size < word_count) ? i + chunk_size : word_count;
+        analyze_chunk(words, i, end);
+    }
+
+    for (int i = 0; i < word_count; i++)
+        free(words[i]);
+    free(words);
+}
+
+// Worker thread function
+void *worker_thread(void *arg)
+{
+    while (1)
+    {
+        pthread_mutex_lock(&task_mutex);
+        if (current_index >= total_urls)
+        {
+            pthread_mutex_unlock(&task_mutex);
+            break;
+        }
+
+        int local_index = current_index++;
+        pthread_mutex_unlock(&task_mutex);
+
+        const char *url = url_tasks[local_index].url;
+        const char *filename = url_tasks[local_index].filename;
+        struct MemoryStruct page;
+
+        printf("Thread %lu: Fetching %s\n", pthread_self(), url);
+        if (fetch_url(url, &page) == 0)
+        {
+            FILE *fp = fopen(filename, "w");
+            if (fp)
+            {
+                fwrite(page.memory, 1, page.size, fp);
+                fclose(fp);
+            }
+            process_text_in_chunks(page.memory);
+            free(page.memory);
+        }
+    }
     return NULL;
 }
 
-/**
- * Main program entry point
- * @param argc Argument count
- * @param argv Argument vector
- * @return 0 on success, 1 on error
- *
- * Built-in functions used:
- * - atoi: Converts string to integer
- * - strncpy: Copies string with length limit
- * - pthread_create: Creates a new thread
- * - pthread_join: Waits for thread termination
- * - curl_global_init: Initializes libcurl globally
- * - curl_global_cleanup: Cleans up libcurl
- */
+// Read URLs from a file
+int read_urls(const char *filename)
+{
+    FILE *file = fopen(filename, "r");
+    if (!file)
+    {
+        perror("Failed to open URL file");
+        return -1;
+    }
+
+    char line[MAX_LINE_LENGTH];
+    int count = 0;
+    while (fgets(line, sizeof(line), file))
+    {
+        if (line[0] == '\0' || line[0] == '\n')
+            continue;
+        count++;
+    }
+    rewind(file);
+
+    url_tasks = malloc(sizeof(URLTask) * count);
+    if (!url_tasks)
+    {
+        fclose(file);
+        return -1;
+    }
+
+    total_urls = 0;
+    char url[MAX_URL_LENGTH];
+    char outname[MAX_URL_LENGTH];
+
+    while (fscanf(file, "%s %s", url, outname) == 2)
+    {
+        strncpy(url_tasks[total_urls].url, url, MAX_URL_LENGTH - 1);
+        strncpy(url_tasks[total_urls].filename, outname, MAX_URL_LENGTH - 1);
+        url_tasks[total_urls].url[MAX_URL_LENGTH - 1] = '\0';
+        url_tasks[total_urls].filename[MAX_URL_LENGTH - 1] = '\0';
+        total_urls++;
+    }
+
+    fclose(file);
+    return 0;
+}
+
+// Main function
 int main(int argc, char *argv[])
 {
-    if (argc < 4)
+    clock_t start = clock();
+
+    if (argc != 4)
     {
-        printf("Usage: %s <thread_count> <url1> <output1> [url2 output2...]\n", argv[0]);
+        fprintf(stderr, "Usage: %s <url_file> <num_threads> <chunk_size>\n", argv[0]);
         return 1;
     }
 
-    // Parse thread count
-    int thread_count = atoi(argv[1]);
-    if (thread_count < 1 || thread_count > MAX_THREADS)
+    const char *url_file = argv[1];
+    int num_threads = atoi(argv[2]);
+    chunk_size = atoi(argv[3]);
+
+    if (num_threads < 1 || num_threads > MAX_THREADS)
     {
-        fprintf(stderr, "Invalid thread count (1-%d)\n", MAX_THREADS);
+        fprintf(stderr, "Number of threads must be between 1 and %d.\n", MAX_THREADS);
         return 1;
     }
 
-    // Calculate number of tasks
-    int task_count = (argc - 2) / 2;
-    if (task_count < 1)
+    if (chunk_size < 1)
     {
-        fprintf(stderr, "No tasks specified\n");
+        fprintf(stderr, "Chunk size must be at least 1.\n");
         return 1;
     }
 
-    // Prepare task array
-    DownloadTask tasks[task_count];
-    for (int i = 0; i < task_count; i++)
+    if (read_urls(url_file) != 0)
     {
-        strncpy(tasks[i].url, argv[2 + i * 2], MAX_URL_LENGTH - 1);
-        strncpy(tasks[i].filename, argv[3 + i * 2], MAX_URL_LENGTH - 1);
-        tasks[i].url[MAX_URL_LENGTH - 1] = '\0'; // Ensure null-termination
-        tasks[i].filename[MAX_URL_LENGTH - 1] = '\0';
+        return 1;
     }
 
-    // Initialize task queue
-    TaskQueue queue;
-    init_queue(&queue, tasks, task_count);
-
-    // Initialize libcurl (must be done before creating threads)
+    pthread_mutex_init(&task_mutex, NULL);
+    pthread_mutex_init(&stats_mutex, NULL);
     curl_global_init(CURL_GLOBAL_ALL);
 
-    printf("Creating %d threads for %d tasks\n", thread_count, task_count);
-    pthread_t threads[thread_count];
+    pthread_t threads[num_threads];
 
-    // Create worker threads
-    for (int i = 0; i < thread_count; i++)
+    // Create threads
+    for (int i = 0; i < num_threads; i++)
     {
-        if (pthread_create(&threads[i], NULL, download_thread, &queue) != 0)
-        {
-            fprintf(stderr, "Error creating thread %d\n", i);
-            curl_global_cleanup();
-            return 1;
-        }
+        pthread_create(&threads[i], NULL, worker_thread, NULL);
     }
 
-    // Wait for all threads to complete
-    for (int i = 0; i < thread_count; i++)
+    // Join threads
+    for (int i = 0; i < num_threads; i++)
     {
         pthread_join(threads[i], NULL);
     }
 
-    // Cleanup libcurl
+    // Print final statistics
+    printf("\n===== Analysis Complete =====\n");
+    printf("Total Words       : %d\n", global_word_count);
+    printf("Total Sentences   : %d\n", global_sentence_count);
+    printf("Longest Word      : %s\n", longest_word);
+
+    pthread_mutex_destroy(&task_mutex);
+    pthread_mutex_destroy(&stats_mutex);
     curl_global_cleanup();
-    printf("All downloads completed\n");
+    free(url_tasks);
+
+    clock_t end = clock();
+    double elapsed = (double)(end - start) / CLOCKS_PER_SEC;
+    printf("Execution time: %.2f seconds\n", elapsed);
     return 0;
 }
