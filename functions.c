@@ -10,7 +10,11 @@ int global_word_count = 0;
 char longest_word[MAX_WORD_LENGTH] = "";
 pthread_mutex_t stats_mutex;
 int char_freq[ALPHABET_COUNT] = {0};  // a-z character frequency
-int *words_per_url = NULL; 
+int *words_per_url = NULL;
+
+// word freq init
+WordFrequency *word_frequencies = NULL;
+int word_freq_count = 0;
 
 size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp) {
     size_t realsize = size * nmemb;
@@ -77,6 +81,8 @@ void analyze_chunk(char **words, int start, int end, int url_index) {
 
         word_count++;
         update_char_frequency(word);
+        update_word_frequency(word);
+        // call word frequency func
 
         pthread_mutex_lock(&stats_mutex);
         if (strlen(word) > strlen(longest_word)) {
@@ -234,6 +240,67 @@ void initialize_word_tracking() {
     if (!words_per_url) {
         fprintf(stderr, "Failed to allocate memory for word stats.\n");
         exit(1);
+    }
+    
+    word_frequencies = (WordFrequency *)malloc(MAX_WORDS * sizeof(WordFrequency));
+    if (!word_frequencies) {
+        fprintf(stderr, "Failed to allocate memory for word frequencies.\n");
+        exit(1);
+    }
+    word_freq_count = 0;
+}
+
+void update_word_frequency(const char *word) {
+    if (!word || strlen(word) == 0) return;
+    
+    pthread_mutex_lock(&stats_mutex);
+    
+    // Convert word to lowercase for case-insensitive comparison
+    char lower_word[MAX_WORD_LENGTH];
+    strncpy(lower_word, word, MAX_WORD_LENGTH - 1);
+    lower_word[MAX_WORD_LENGTH - 1] = '\0';
+    for (int i = 0; lower_word[i]; i++) {
+        lower_word[i] = tolower(lower_word[i]);
+    }
+    
+    // Check if word already exists
+    for (int i = 0; i < word_freq_count; i++) {
+        if (strcmp(word_frequencies[i].word, lower_word) == 0) {
+            word_frequencies[i].frequency++;
+            pthread_mutex_unlock(&stats_mutex);
+            return;
+        }
+    }
+    
+    // Add new word if we haven't reached the maximum
+    if (word_freq_count < MAX_WORDS) {
+        strncpy(word_frequencies[word_freq_count].word, lower_word, MAX_WORD_LENGTH - 1);
+        word_frequencies[word_freq_count].word[MAX_WORD_LENGTH - 1] = '\0';
+        word_frequencies[word_freq_count].frequency = 1;
+        word_freq_count++;
+    }
+    
+    pthread_mutex_unlock(&stats_mutex);
+}
+
+// Comparison function for qsort
+int compare_word_frequencies(const void *a, const void *b) {
+    const WordFrequency *wf1 = (const WordFrequency *)a;
+    const WordFrequency *wf2 = (const WordFrequency *)b;
+    return wf2->frequency - wf1->frequency;  // Sort in descending order
+}
+
+void print_top_words(int count) {
+    if (count > word_freq_count) {
+        count = word_freq_count;
+    }
+    
+    // Sort word frequencies
+    qsort(word_frequencies, word_freq_count, sizeof(WordFrequency), compare_word_frequencies);
+    
+    printf("\n===== Top %d Most Frequent Words =====\n", count);
+    for (int i = 0; i < count; i++) {
+        printf("%d. %s: %d occurrences\n", i + 1, word_frequencies[i].word, word_frequencies[i].frequency);
     }
 }
 

@@ -67,12 +67,14 @@ int main(int argc, char *argv[])
     printf("Longest Word      : %s\n", longest_word);
 
     print_word_statistics(); // New function: per URL and character stats
+    print_top_words(10);    // Print top 10 most frequent words
 
     pthread_mutex_destroy(&task_mutex);
     pthread_mutex_destroy(&stats_mutex);
     curl_global_cleanup();
     free(url_tasks);
     free(words_per_url);
+    free(word_frequencies);  // Free the word frequencies array
 
     clock_t end = clock();
     double elapsed = (double)(end - start) / CLOCKS_PER_SEC;

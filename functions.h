@@ -14,6 +14,7 @@
 #define MAX_WORD_LENGTH 128
 #define MAX_THREADS 16
 #define ALPHABET_COUNT 26
+#define MAX_WORDS 10000  // Maximum number of unique words to track
 
 typedef struct {
     char *memory;
@@ -24,6 +25,13 @@ typedef struct {
     char url[MAX_URL_LENGTH];
     char filename[MAX_URL_LENGTH];
 } URLTask;
+
+
+// word frequency struct
+typedef struct {
+    char word[MAX_WORD_LENGTH];
+    int frequency;
+} WordFrequency;
 
 extern URLTask *url_tasks;
 extern int total_urls;
@@ -37,6 +45,10 @@ extern char longest_word[MAX_WORD_LENGTH];
 extern int char_freq[ALPHABET_COUNT];
 extern int *words_per_url;
 
+//word frequency vars
+extern WordFrequency *word_frequencies;
+extern int word_freq_count;
+
 size_t WriteMemoryCallback(void *, size_t, size_t, void *);
 int fetch_url(const char *, MemoryStruct *);
 void analyze_chunk(char **, int, int, int);
@@ -46,5 +58,9 @@ void update_char_frequency(const char *);
 void initialize_word_tracking();
 void print_word_statistics();
 void *worker_thread(void *);
+
+//word frequency funcs
+void update_word_frequency(const char *word);
+void print_top_words(int count);
 
 #endif
